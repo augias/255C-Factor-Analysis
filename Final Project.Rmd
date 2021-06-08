@@ -1,0 +1,458 @@
+---
+title: Factor Analysis of a School Context Scale from the TIMSS 2019 Study
+subtitle: "Introduction to Factor Analysis and Item Response Theory"
+author: "Fernando Mora"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+    keep_tex: yes
+    fig_caption: yes
+tables: true
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Documents/UCLA/Spring 2021/ED255C - Intro to Factor Analysis and IRT/TIMSS final proj")
+options(knitr.table.format = "latex")
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(lattice)
+library(EdSurvey)
+library(lavaan)
+library(semTools)
+library(semPlot)
+library(psych)
+library(GPArotation)
+options(scipen=999)
+
+setwd("~/Documents/UCLA/Spring 2021/ED255C - Intro to Factor Analysis and IRT/TIMSS final proj")
+
+load("Cleandata.RData")
+
+```
+
+\newpage
+The TIMSS study on math and science achievement monitors and benchmarks fourth and eighth graders across 64 countries (although my query yielded only 39), along with a multitude of background and context survey items administered to school leaders and content area teachers. I have used the data set for a number of methods courses testing, for example, the generalizability of administering different testlets within classrooms, and Bayesian estimation of teacher background characteristics in students' final math achievement scores. In the spirit of this class' topic, and my own curiosity about the properties of the school context scales that teachers and principals answer, I chose to conduct and exploratory factor analysis of one school context scale, and parse whether EFA and CFA models would yield different fit statistics and factor loadings across respondent groups (math, science, or admin) as well as countries.  
+
+```{r, include=FALSE}
+n_per_group <- df %>% group_by(group) %>% summarise(n_distinct(id))
+n_per_group_us <- df %>% filter(country==840) %>% group_by(group) %>% summarise(n_distinct(id))
+
+groups.table <- cbind(n_per_group, n_per_group_us[,2]) 
+
+colnames(groups.table)<-c("group", "International", "US")
+
+means <- df.numeric %>% group_by(country) %>% 
+  summarise_at(vars(c(bg06c, bg06g, bg06i)), funs(
+    mean = mean(.,na.rm=TRUE),
+    sd = sd(.,na.rm=TRUE)))
+
+means <- means %>% relocate(c(bg06c_sd), .after = bg06c_mean) %>%
+  relocate(c(bg06g_sd), .after = bg06g_mean) %>%
+  relocate(c(bg06i_sd), .after = bg06i_mean)
+
+```
+
+```{r, echo=FALSE}
+groups.table %>%
+  kable(booktabs = TRUE,
+      format = "latex",
+      escape = TRUE,
+      caption = "Sample Sizes per group in the international and US datasets") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+Like its civics and social science counterpart PISA, TIMSS attempts to benchmark and contrast international achievement with a standardized instrument, which I find lofty and not a little bit messy given how strongly cultural and material differences may influence across-country variation. Although student achievement scores and covariates are attentively given a number of weighting covariates in TIMSS' own prescribed analysis recommendations, no such attention is given (to my knowledge) to the context questionnaires measuring teacher and principal attitudes and beliefs.  
+
+I am entering this project with the hypothesis that factor analyses using the complete international data set will be noisy and ill-fitting in terms of any latent belief uncovered by the models, and that these should narrow within countries, and more so between respondent groups within a country, representing a more coherent set of shared beliefs across individuals working under similar political and cultural macro-contexts. For this exercise, I will be performing EFAs on a split international dataset, a split international set for admins and for math teachers, and the US and UAE sets. These last two address a concern I have regarding coherence of teacher and admin beliefs between a large heterogeneous country (like the United States), and a smaller, more homogeneous country like the United Arab Emirates. 
+
+```{r, echo=FALSE}
+round(means,2) %>%
+  kable(booktabs = TRUE,
+      format = "latex",
+      escape = TRUE,
+      caption = "Mean and SD for 3 sample items across all participating countries") %>%
+  add_header_above(c(" "=1, "Teachers' Expectations"=2, "Parental Expectations"=2, "Students' Desire"=2))%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+Above, we can appreciate how different countries' scores were from in just three of the items: "Teachers’ expectations for student achievement"; Parental expectations for student achievement"; and "Students’ desire to do well in school".
+
+The lettered list below shows verbatim the questions that participating teachers, as well as school principals, are asked regarding their beliefs about their school's teacher, parent, and student attitudes regarding, for lack of a better cohering description, academic *excellence*. The wording is identical across the two questionnaires administered to either principals or math and science teachers, except for an extra item (6L), which asks teachers about collaboration between leadership and instructional staff. Administrators do not receive this question, so that item was omitted from the analyses. The questions appear in a single block of the survey, and respondents are given a five point likert-like scale. Their choices range from 'Very High', coded as 1, to 'Very Low', coded 5:  
+
+a) Teachers' understanding of the school's curricular goals
+b) Teachers' degree of success in implementing the school's curriculum 
+c) Teachers' expectations for student achievement
+d) Teachers' ability to inspire students
+e) Parental involvement in school activities
+f) Parental commitment to ensure that students are ready to learn
+g) Parental expectations for student achievement
+h) Parental support for student achievement
+i) Students' desire to do well in school
+j) Students' ability to reach school's academic goals
+k) Students' respect for classmates who excel academically  
+
+From the list and description provided above, you may guess that I hypothesized a 3 factor structure pertaining to respondents' beliefs about: 1) Teachers at their school; 2) Parents at their school; and 3) Students at their schools. All the questions generally inquire about these 3 groups' attitudes towards academic excellence, as I mentioned before. However, wording is tricky in these 11 items where we see ability used differently regarding students, teachers, and parents.
+
+In either case, I used a screeplot derived from polychoric correlations of the 11 items and, using a cutoff score above 1 on variance, found that 3 components did seem to be a reasonably parsimonious factor structure. The plot shows eigenvalues on components from both the full international dataset, and the United States subset, with similar results. 
+
+```{r, include=FALSE}
+set.seed(37645)                            # Set seed for reproducibility
+dummy_sep <- rbinom(nrow(df), 1, 0.5)    # Create dummy indicator
+df1 <- df.numeric[dummy_sep == 0, ] #Split for EFA
+df2 <- df.numeric[dummy_sep == 1, ] #Split for CFA
+polycorr <- round(lavCor(df[,4:14], ordered=TRUE),3)
+fit1<-princomp(covmat=polycorr)
+
+# US Sample
+us.poly <- filter(df, country == 840)
+us.poly[,4:14]<-apply(us.poly[,4:14],2,as.ordered)
+us.poly[,4:14]<-lapply(us.poly[,4:14],as.ordered)
+us.polycorr <- round(lavCor(us.poly[,4:14], ordered=TRUE),3)
+fit.us<-princomp(covmat=us.polycorr)
+
+# RUS Sample
+rus.poly <- filter(df, country == 643)
+rus.poly[,4:14]<-apply(rus.poly[,4:14],2,as.ordered)
+rus.poly[,4:14]<-lapply(rus.poly[,4:14],as.ordered)
+rus.polycorr <- round(lavCor(rus.poly[,4:14], ordered=TRUE),3)
+fit.rus<-princomp(covmat=rus.polycorr)
+
+```
+
+
+```{r, echo=FALSE}
+screeplot(fit1, npcs = 10, type = "lines")
+screeplot(fit.us, npcs = 10, type = "lines")
+```
+
+
+```{r, include=FALSE}
+
+# FUll Sample
+N=nrow(df1)
+fa.unrotated<-fa(df1[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "none", fm="mle")
+fa.varimax<-fa(df1[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "varimax", fm="mle")
+fa.oblimin<-fa(df1[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "oblimin", fm="mle")
+fa.unrotated
+fa.varimax
+fa.oblimin
+
+# US Sample
+us.df <- filter(df.numeric, country == 840)
+N=nrow(us.df)
+fa.us.unrotated<-fa(us.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "none", fm="mle")
+fa.us.varimax<-fa(us.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "varimax", fm="mle")
+fa.us.oblimin<-fa(us.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "oblimin", fm="mle")
+fa.us.unrotated
+fa.us.varimax
+fa.us.oblimin$loadings
+
+# UAE Sample
+uae.df <- filter(df.numeric, country == 784)
+N=nrow(uae.df)
+fa.uae.unrotated<-fa(uae.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "none", fm="mle")
+fa.uae.varimax<-fa(uae.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "varimax", fm="mle")
+fa.uae.oblimin<-fa(uae.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "oblimin", fm="mle")
+fa.uae.unrotated
+fa.uae.varimax
+fa.uae.oblimin$loadings
+
+# Math Teacher Sample
+math.df <- filter(df1, group == "math")
+N=nrow(math.df)
+fa.math.unrotated<-fa(math.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "none", fm="mle")
+fa.math.varimax<-fa(math.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "varimax", fm="mle")
+fa.math.oblimin<-fa(math.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "oblimin", fm="mle")
+fa.math.unrotated
+fa.math.varimax
+fa.math.oblimin
+
+
+# Admin Sample
+admin.df <- filter(df1, group == "admin")
+N=nrow(admin.df)
+fa.admin.unrotated<-fa(admin.df[,4:14], nfactors = 4, n.obs = N, cor = "poly", rotate = "none", fm="mle")
+fa.admin.varimax<-fa(admin.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "varimax", fm="mle")
+fa.admin.oblimin<-fa(admin.df[,4:14], nfactors = 3, n.obs = N, cor = "poly", rotate = "oblimin", fm="mle")
+fa.admin.unrotated
+fa.admin.varimax
+fa.admin.oblimin
+
+
+loadings1<-cbind(fa.oblimin$loadings, fa.us.oblimin$loadings, fa.uae.oblimin$loadings, fa.math.oblimin$loadings, fa.admin.oblimin$loadings)
+loadings1<-apply(loadings1,2, function(x) ifelse(x<0.1,0,x))
+round(loadings1,3)
+
+uniqueness1<-t(rbind(fa.oblimin$uniquenesses, fa.us.oblimin$uniquenesses, fa.uae.oblimin$uniquenesses, fa.math.oblimin$uniquenesses, fa.admin.oblimin$uniquenesses))
+
+chi<-cbind(fa.oblimin$chi, fa.us.oblimin$chi, fa.uae.oblimin$chi, fa.math.oblimin$chi, fa.admin.oblimin$chi)
+rownames(chi)<-"Chi-Squared"
+
+RMSEA<-cbind(fa.oblimin$RMSEA[1], fa.us.oblimin$RMSEA[1], fa.uae.oblimin$RMSEA[1], fa.math.oblimin$RMSEA[1], fa.admin.oblimin$RMSEA[1])
+rownames(RMSEA)<-"RMSEA"
+
+BIC<-cbind(fa.oblimin$BIC, fa.us.oblimin$BIC, fa.uae.oblimin$BIC, fa.math.oblimin$BIC, fa.admin.oblimin$BIC)
+rownames(BIC)<-"BIC"
+
+TLI<-cbind(fa.oblimin$TLI, fa.us.oblimin$TLI, fa.uae.oblimin$TLI, fa.math.oblimin$TLI, fa.admin.oblimin$TLI)
+rownames(TLI)<-"TLI"
+
+fa.CFI<-function(x){
+        nombre<-paste(x,"CFI",sep = ".")
+        nombre<-
+                ((x$null.chisq-x$null.dof)-(x$STATISTIC-x$dof))/(x$null.chisq-x$null.dof)
+        return(nombre)
+}
+CFI<-cbind(fa.CFI(fa.oblimin),fa.CFI(fa.us.oblimin), fa.CFI(fa.uae.oblimin), fa.CFI(fa.math.oblimin),fa.CFI(fa.admin.oblimin))
+rownames(CFI)<-"CFI"
+
+fitindices1<-round(rbind(uniqueness1,chi,BIC,RMSEA,TLI,CFI),3)
+colnames(fitindices1)<-c("Intnl Sample", "US Sample", "UAE Sample", "Math Teachers", "Admin")
+
+```
+
+### Exploratory Factor Analysis  
+
+The next step was to perform exploratory factor analysis on a split dataset, which I was able to do thanks to the large number of participants in each study. This would allow a second confirmatory step after assessing fit and best possible model/factor structure. For the factor analysis, I included the argument to use Maximum Likelihood Estimation, as well as specifying a polychoric correlation method.  
+
+Keeping factor loading results from an oblique rotation in Table 3, we see some evidence for three latent factors across all the potential samples used. However, there were examples of cross-loading between factors on several items. Most noticeably, items 6C, 6G and 6H. G and H crossloaded between the teacher student factors, and the parent student factor, respectively. 6H, parental support, similarly cross loaded across parent and student factors, as well. All these cross-loadings make some sense, semantically speaking, as the items refer to one group action ("expectation" and "support") into a student behavior, "achievement".  
+
+```{r, echo=FALSE, results='asis'}
+gsub("0.000"," ", round(loadings1,3) %>%
+  kable(booktabs = TRUE,
+      format = "latex",
+      escape = TRUE,
+      caption = "Factor Loadings on Full Sample, and US, Math Teacher, and Admin Subsamples") %>%
+  add_header_above(c("Item"=1, "Intnl Sample"=3, "US Sample"=3, "UAE Sample"=3, "Math Teachers"=3, "Admins"=3)) %>%
+  kable_styling(font_size = 8) %>%
+  kable_styling(latex_options = "HOLD_position"))
+```
+
+Assessing fit for the models, I provide each one's uniquenesses and fit statistics in Table 4. Depending on which fit statistic you want to use, there are a number of conclusions. First, that there was relatively worse model fit for the entire US sample than the international sample, if we base our decision on RMSEA, TLI, and CFI. Might the united states inconsistency of curricular goals, resources, and policies across states and districts be a larger influence on respondents' beliefs than differences across the rest of the world? This is hard to interpret. However, BIC is lowest in the national samples, despite RMSEA, TLI, and CFI. I will also assume the massive sample size for the international sample plays a strong role in the inflated $\chi^2$ and BIC statistics. 
+
+Regardless, TLI and CFI was lowest in the US sample, while the same indices were quite consistent in the world sample, math teachers, principals, and even the UAE sample. RMSEA never went past a .05 threshold, though I realize this is a subjective cutoff. Model fit for the EFA was, overall, fair but not *great*, and I wonder if TIMSS researchers designed the instrument with latent variable modeling in mind. No research from the organization itself seems to indicate a concern for the reliability of the scales as they pertain to psychological constructs, beyond descriptive use or for use as regression covariates!  
+
+I continue on below to explore whether this three factor model is adequate in explaining different respondents' beliefs about their school using the split half of the full international sample, borrowing strength from numbers and the relative good fit compared country-specific indices.  
+
+```{r, echo=FALSE, results='asis'}
+fitindices1 %>%
+  kable(booktabs = TRUE,
+      format = "latex",
+      escape = TRUE,
+      caption = "Model Fit and Uniqueness Indices") %>%
+  group_rows("Uniquenesses", 1,11) %>%
+  group_rows("Fit Indices", 12,16) %>%
+  kable_styling(font_size = 10) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+### Confirmatory Factor Analysis  
+
+For the Confirmatory Factor Analyses, I chose to stick with the international sample in order to confirm how well the 3 factor model explains respondent's beliefs about their school environment. Additionally, I tested invariance across multiple groups, to address my curiosity over whether the latent variable is accounted for equally between principals, math teachers, and science teachers. Were this the case, a good argument could be made for the potential use of this scale for contextualizing school performance or student achievement measures, regardless of country and inclusive of math, science, and school indicators of the three latent *excellence* factors.  
+
+```{r, include=FALSE}
+# CFA
+# specify model A: strict invariance model, 3 factors, independent clusters
+modelA <- ' 
+           # constrain slopes to be equal across groups
+           parents =~ c(l11,l11,l11)*bg06e + c(l21,l21,l21)*bg06f + c(l31,l31,l31,)*bg06f + c(l41,l41,l41)*bg06g + c(l51,l51,l51)*bg06h
+           teachers =~ c(l62,l62,l62)*bg06a + c(l72,l72,l72)*bg06b + c(l82,l82,l82)*bg06c + c(l92,l92,l92)*bg06d
+           students =~ c(l93,l93,l93)*bg06i + c(l103,l103,l103)*bg06j + c(l113,l113,l113)*bg06k
+           
+
+           # constrain intercepts to be equal across groups
+           bg06a ~ c(mu1,mu1,mu1)*1
+           bg06b ~ c(mu2,mu2,mu2)*1
+           bg06c ~ c(mu3,mu3,mu3)*1
+           bg06d ~ c(mu4,mu4,mu4)*1
+           bg06e ~ c(mu5,mu5,mu5)*1
+           bg06f ~ c(mu6,mu6,mu6)*1
+           bg06g ~ c(mu7,mu7,mu7)*1           
+           bg06h ~ c(mu8,mu8,mu8)*1 
+           bg06i ~ c(mu9,mu9,mu9)*1
+           bg06j ~ c(mu10,mu10,mu10)*1
+           bg06k ~ c(mu11,mu11,mu11)*1
+  
+           # constrain unique factor variances to be equal across groups
+           bg06a ~~ c(ps11,ps11,ps11)*bg06a
+           bg06b ~~ c(ps22,ps22,ps22)*bg06b
+           bg06c ~~ c(ps33,ps33,ps33)*bg06c
+           bg06d ~~ c(ps44,ps44,ps44)*bg06d
+           bg06e ~~ c(ps55,ps55,ps55)*bg06e
+           bg06f ~~ c(ps66,ps66,ps66)*bg06f       
+           bg06g ~~ c(ps77,ps77,ps77)*bg06g
+           bg06h ~~ c(ps88,ps88,ps88)*bg06h
+           bg06i ~~ c(ps99,ps99,ps99)*bg06i
+           bg06j ~~ c(ps1010,ps1010,ps1010)*bg06j
+           bg06k ~~ c(ps1111,ps1111,ps1111)*bg06k
+
+           # group 1 will be reference group (fix group 1 means and variances)
+           parents ~ c(0,NA,NA)*1 # fix group 1 eta1 mean to 0
+           parents ~~ c(1,NA,NA)*parents # fix group 1 eta1 variance to 1
+           teachers ~ c(0,NA,NA)*1 # fix group 1 eta2 mean to 0
+           teachers ~~ c(1,NA,NA)*teachers # fix group 1 eta2 variance to 1
+           students ~ c(0,NA,NA)*1 # fix group 1 eta3 mean to 0
+           students ~~ c(1,NA,NA)*students # fix group 1 eta3 variance to 1 
+           '
+
+# specify model B: strong metric invariance model, 3 factors, independent clusters
+modelB <- ' 
+           # constrain slopes to be equal across groups
+           parents =~ c(l11,l11,l11)*bg06e + c(l21,l21,l21)*bg06f + c(l31,l31,l31,)*bg06f + c(l41,l41,l41)*bg06g + c(l51,l51,l51)*bg06h
+           teachers =~ c(l62,l62,l62)*bg06a + c(l72,l72,l72)*bg06b + c(l82,l82,l82)*bg06c + c(l92,l92,l92)*bg06d
+           students =~ c(l93,l93,l93)*bg06i + c(l103,l103,l103)*bg06j + c(l113,l113,l113)*bg06k
+
+           # constrain intercepts to be equal across groups
+           bg06a ~ c(mu1,mu1,mu1)*1
+           bg06b ~ c(mu2,mu2,mu2)*1
+           bg06c ~ c(mu3,mu3,mu3)*1
+           bg06d ~ c(mu4,mu4,mu4)*1
+           bg06e ~ c(mu5,mu5,mu5)*1
+           bg06f ~ c(mu6,mu6,mu6)*1
+           bg06g ~ c(mu7,mu7,mu7)*1           
+           bg06h ~ c(mu8,mu8,mu8)*1 
+           bg06i ~ c(mu9,mu9,mu9)*1
+           bg06j ~ c(mu10,mu10,mu10)*1
+           bg06k ~ c(mu11,mu11,mu11)*1
+  
+           # allow unique variances to be freely estimated
+
+           # group 1 will be reference group (fix group 1 means and variances)
+           parents ~ c(0,NA,NA)*1 # fix group 1 eta1 mean to 0
+           parents ~~ c(1,NA,NA)*parents # fix group 1 eta1 variance to 1
+           teachers ~ c(0,NA,NA)*1 # fix group 1 eta2 mean to 0
+           teachers ~~ c(1,NA,NA)*teachers # fix group 1 eta2 variance to 1
+           students ~ c(0,NA,NA)*1 # fix group 1 eta3 mean to 0
+           students ~~ c(1,NA,NA)*students # fix group 1 eta3 variance to 1 
+           '
+
+# specify model C: partial strong metric invariance model, 3 factors, independence cluster
+modelC <- ' 
+           # constrain NO slopes to be equal across groups
+           parents =~ bg06e + bg06f + bg06g + bg06h
+           teachers =~ bg06a + bg06b + bg06c + bg06d
+           students =~ bg06i + bg06j + bg06k
+
+
+           # constrain intercepts to be equal across groups
+           bg06a ~ c(mu1,mu1,mu1)*1
+           bg06b ~ c(mu2,mu2,mu2)*1
+           bg06c ~ c(mu3,mu3,mu3)*1
+           bg06d ~ c(mu4,mu4,mu4)*1
+           bg06e ~ c(mu5,mu5,mu5)*1
+           bg06f ~ c(mu6,mu6,mu6)*1
+           bg06g ~ c(mu7,mu7,mu7)*1           
+           bg06h ~ c(mu8,mu8,mu8)*1 
+           bg06i ~ c(mu9,mu9,mu9)*1
+           bg06j ~ c(mu10,mu10,mu10)*1
+           bg06k ~ c(mu11,mu11,mu11)*1
+  
+           # allow unique variances to be freely estimated
+
+           # group 1 will be reference group (fix group 1 means and variances)
+           parents ~ c(0,NA,NA)*1 # fix group 1 eta1 mean to 0
+           parents ~~ c(1,NA,NA)*parents # fix group 1 eta1 variance to 1
+           teachers ~ c(0,NA,NA)*1 # fix group 1 eta2 mean to 0
+           teachers ~~ c(1,NA,NA)*teachers # fix group 1 eta2 variance to 1
+           students ~ c(0,NA,NA)*1 # fix group 1 eta3 mean to 0
+           students ~~ c(1,NA,NA)*students # fix group 1 eta3 variance to 1 
+           '
+
+
+# fit the alternate models
+fit.A <- cfa(modelA,data=df2[,c(2,4:14)],group="group", group.label=c("admin","math","sci"),
+             ordered=c("bg06a","bg06b","bg06c","bg06d","bg06e","bg06f","bg06g","bg06h","bg06i","bg06j","bg06k"), std.lv=TRUE)
+
+fit.B <- cfa(modelB,data=df2[,c(2,4:14)],group="group", group.label=c("admin","math","sci"),
+             ordered=c("bg06a","bg06b","bg06c","bg06d","bg06e","bg06f","bg06g","bg06h","bg06i","bg06j","bg06k"), std.lv=TRUE)
+
+fit.C <- cfa(modelC,data=df2[,c(2,4:14)],group="group", group.label=c("admin","math","sci"), 
+             ordered=c("bg06a","bg06b","bg06c","bg06d","bg06e","bg06f","bg06g","bg06h","bg06i","bg06j","bg06k"), std.lv=TRUE)
+
+# Question 10. model fit indices (Table 4)
+out <- c("npar","chisq","df","pvalue","cfi","tli","rmsea","srmr")
+fit2 <- round(cbind(
+fitMeasures(fit.A)[out],
+fitMeasures(fit.B)[out],
+fitMeasures(fit.C)[out]),
+3)
+colnames(fit2)<-c("Strict","Strong","Partial")
+fit2
+# Question 13. structural parameters (Table 5)
+summary(fit.A)
+summary(fit.B)
+summary(fit.C)
+# measurementInvarianceCat(model = model.configural, data = df2[,c(2,4:14)], group = "group",
+#                                parameterization = "theta",
+#                          strict = TRUE,
+#                          ordered=c("bg06a","bg06b","bg06c","bg06d","bg06e","bg06f","bg06g","bg06h","bg06i","bg06j","bg06k"))
+# 
+# Now Table the model structures
+
+admin1mean<-c(0,"-",0,"-",0,"-")
+admin2mean<-c(0,"-",0,"-",0,"-")
+admin3mean<-c(0,"-",0,"-",0,"-")
+admin1var<-c(1,"-",1,"-",1,"-")
+admin2var<-c(1,"-",1,"-",1,"-")
+admin3var<-c(1,"-",1,"-",1,"-")
+admincovpt<-c(.709,.010,.709,.010,.706,.010)
+admincovps<-c(.848,.006,.848,.008,.846,.006)
+admincovts<-c(.720,.010,.720,.010,.719,.010)
+math1mean<-c(-.015,.017,-.015,.017,0,.015)
+math2mean<-c(0,.032,0,.032,0,.032)
+math3mean<-c(0,.020,0,.020,0,.020)
+math1var<-c(.975,.009,.975,.009,.702,.003)
+math2var<-c(.869,.012,.869,.012,.609,.005)
+math3var<-c(.961,.012,.961,.012,.656,.003)
+mathcovpt<-c(.562,.012,.562,.012,.399,.007)
+mathcovps<-c(.815,.010,.815,.010,.571,.005)
+mathcovts<-c(.580,.013,.580,.013,.401,.007)
+sci1mean<-c(-.015,.015,-.015,.015,0,.013)
+sci2mean<-c(0,.031,0,.031,0,.028)
+sci3mean<-c(0,.018,0,.018,0,.016)
+sci1var<-c(.970,.008,.970,.008,.729,.002)
+sci2var<-c(.897,.012,.897,.012,.647,.004)
+sci3var<-c(.966,.011,.966,.011,.706,.003)
+scicovpt<-c(.580,.010,.580,.010,.428,.006)
+scicovps<-c(.800,.009,.800,.009,.594,.004)
+scicovts<-c(.614,.011,.614,.011,.446,.006)
+
+structure.table<-rbind(admin1mean, admin2mean, admin3mean, admin1var, admin2var, admin3var, admincovpt, admincovps, admincovts, math1mean, math2mean, math3mean, math1var, math2var, math3var, mathcovpt, mathcovps, mathcovts, sci1mean, sci2mean, sci3mean, sci1var, sci2var, sci3var, scicovpt, scicovps, scicovts)
+
+rownames(structure.table)<-c("Parent factor mean a", "Teacher factor mean a", "Student factor mean a", "Parent factor variance a", "Teacher factor variance a", "Student factor variance a", "Covariance P:T a", "Covariance P:S a", "Covariance T:S a","Parent factor mean m", "Teacher factor mean m", "Student factor mean m", "Parent factor variance m", "Teacher factor variance m", "Student factor variance m", "Covariance P:T m", "Covariance P:S m", "Covariance T:S m","Parent factor mean s", "Teacher factor mean s", "Student factor mean s", "Parent factor variance s", "Teacher factor variance s", "Student factor variance s", "Covariance P:T s", "Covariance P:S s", "Covariance T:S s")
+
+rownames(fit2)<-c("Free parameters", "Chi-Squared statistic", "Degrees of freedom", "p-value", "Comparative Fit Index", "Tucker-Lewis Index", "RMSEA", "SRMR")
+
+```
+
+```{r, echo=FALSE, results='asis'}
+fit2 %>%
+  kable(booktabs = TRUE,
+      format = "latex",
+      escape = TRUE,
+      caption = "Model Fit Indices by Model") %>%
+  kable_styling(font_size = 10) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+Table 6 indicates how varying constraints on model parameters affects the models' structures. Surprisingly, and I will assume my code had a fatal flaw, restricting slopes, intercepts and variances across groups did virtually nothing across partial, strong, nor strict invariance models. Table 5 above features the different fit indices used, and across the board, these did not change meaningfully as models became less restrictive. Using a (deprecated) `measurementInvarianceCat` function also showed non-significant differences across invariance limits all the way from configural to strict invariance.  
+
+Although I am pretty sure something was coded improperly, were my coding correct these results would indicate that TIMSS researchers may have some reason to more freely make mean comparisons in this specific scale. Specifically, with regard to teacher and principal beliefs regarding teacher, parent, or students' orientation towards "excellence".
+
+```{r, echo=FALSE, results='asis'}
+structure.table %>%
+  kable(booktabs = TRUE,
+      format = "latex",
+      escape = TRUE,
+      caption = "Fit Indices by Model") %>%
+  group_rows("Principals", 1,9) %>%
+  group_rows("Math Teachers", 10,18) %>%
+  group_rows("Science Teachers", 19, 27) %>%
+  add_header_above(c(" "=1, "Strict Invariance"=2, "Strong Invariance"=2, "Partial Invariance"=2)) %>%
+  kable_styling(font_size = 10) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
